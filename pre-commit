@@ -1,0 +1,17 @@
+#!/bin/sh
+
+make fix
+fix_exit_code=$?
+if [ $fix_exit_code -ne 0 ]; then
+    echo "Make fix failed, code changes not committed."
+    exit $lint_exit_code
+fi
+echo "fixed"
+
+make lint
+lint_exit_code=$?
+if [ $lint_exit_code -ne 0 ]; then
+    echo "Make lint failed, code changes not committed."
+    exit $lint_exit_code
+fi
+echo "linted"
