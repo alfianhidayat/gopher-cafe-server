@@ -1,58 +1,138 @@
 package coffeeshop
 
 import (
-	"sync/atomic"
+	"context"
+	"fmt"
+	"gopher-cafe/internal/worker"
+	"sync"
 	"time"
 
 	entity "gopher-cafe/internal/entity/coffeeshop"
+
+	"github.com/ajaibid/coin-common-golang/logger"
 )
 
 type CoffeeshopUsecase struct {
-	totalRequests int64
-	totalOrders   int64
-	p90RequestsMs int64
+	equipPoolManager *worker.EquipPoolManager
+	metrics          *entity.OrderMetrics
 }
 
-func NewCoffeeshopUsecase() *CoffeeshopUsecase {
-	return &CoffeeshopUsecase{}
+func NewCoffeeshopUsecase(manager *worker.EquipPoolManager, metrics *entity.OrderMetrics) *CoffeeshopUsecase {
+	return &CoffeeshopUsecase{
+		equipPoolManager: manager,
+		metrics:          metrics,
+	}
 }
 
-func (u *CoffeeshopUsecase) ExecuteBrew(orders []entity.Order, baristas int) []entity.OrderResult {
-	atomic.AddInt64(&u.totalRequests, 1)
+func (u *CoffeeshopUsecase) ExecuteBrew(ctx context.Context, orders []entity.Order, baristas int) []entity.OrderResult {
+	u.metrics.RecordTotalRequests(len(orders))
+
+	orderInputChan := make(chan OrderInput, len(orders))
+	//defer close(orderInputChan)
+
+	for i := range baristas {
+		go func(oic <-chan OrderInput) {
+			logger.Debugf("Baristas: %d start working", i)
+			for {
+				select {
+				case <-ctx.Done():
+					logger.Debugf("Baristas: %d got context done", i)
+					return
+				case input, ok := <-oic:
+					if !ok {
+						logger.Debugf("Baristas: %d got channel closed", i)
+						return
+					}
+					logger.Debugf("Baristas: %d executing order: %d", i, input.data.ID)
+					err := u.processOrder(input)
+					if err != nil {
+						logger.Errorf("Baristas: %d processing order %d failed: %s", i, input.data.ID, err)
+						return
+					}
+				}
+			}
+		}(orderInputChan)
+	}
+
+	wg := sync.WaitGroup{}
+
+	logger.Debugf("Start submit orders")
 
 	results := make([]entity.OrderResult, 0, len(orders))
 
 	for _, order := range orders {
-		recipe := entity.Recipes[order.Drink]
-		res := entity.OrderResult{OrderID: order.ID}
+		orderResultChan := make(chan entity.OrderResult)
 
-		for _, step := range recipe {
-			startStep := time.Now().UnixMilli()
-			time.Sleep(step.Duration)
-			endStep := time.Now().UnixMilli()
-
-			res.Steps = append(res.Steps, entity.StepExecution{
-				Equipment:   step.Equipment,
-				StartTimeMs: startStep,
-				EndTimeMs:   endStep,
-			})
+		logger.Debugf("Order %d submitted", order.ID)
+		orderInputChan <- OrderInput{
+			data:          order,
+			resultChannel: orderResultChan,
 		}
-		results = append(results, res)
-		u.recordOrderStats(res)
+
+		wg.Add(1)
+		go func(orc <-chan entity.OrderResult) {
+			defer wg.Done()
+			select {
+			case <-ctx.Done():
+				logger.Debugf("OrderResult %d got context done", order.ID)
+				return
+			case orderResult, ok := <-orc:
+				if !ok {
+					logger.Debugf("OrderResult %d got channel closed", order.ID)
+					return
+				}
+				results = append(results, orderResult)
+				u.recordOrderStats(orderResult)
+			}
+		}(orderResultChan)
 	}
+
+	wg.Wait()
 	return results
 }
 
-func (u *CoffeeshopUsecase) recordOrderStats(res entity.OrderResult) {
-	atomic.AddInt64(&u.totalOrders, 1)
-	if len(res.Steps) > 0 {
-		duration := res.Steps[len(res.Steps)-1].EndTimeMs - res.Steps[0].StartTimeMs
-		atomic.AddInt64(&u.p90RequestsMs, duration)
+func (u *CoffeeshopUsecase) processOrder(input OrderInput) error {
+	order := input.data
+
+	recipe := entity.Recipes[order.Drink]
+	res := entity.OrderResult{OrderID: order.ID}
+
+	for _, step := range recipe {
+		startStep := time.Now().UnixMilli()
+
+		pool, err := u.equipPoolManager.GetWorkerPool(step.Equipment)
+		if err != nil {
+			return fmt.Errorf("get worker pool failed: %v", err)
+		}
+
+		_, err = pool.Submit(worker.Job{
+			OrderID: order.ID,
+			Timer:   step.Duration,
+		})
+
+		if err != nil {
+			return fmt.Errorf("submit failed: %v", err)
+		}
+
+		endStep := time.Now().UnixMilli()
+
+		res.Steps = append(res.Steps, entity.StepExecution{
+			Equipment:   step.Equipment,
+			StartTimeMs: startStep,
+			EndTimeMs:   endStep,
+		})
 	}
+
+	input.resultChannel <- res
+	return nil
+}
+
+func (u *CoffeeshopUsecase) recordOrderStats(res entity.OrderResult) {
+	u.metrics.RecordOrder(res)
 }
 
 func (u *CoffeeshopUsecase) GetStats() (int64, int64, int64) {
-	return atomic.LoadInt64(&u.totalRequests),
-		atomic.LoadInt64(&u.totalOrders),
-		atomic.LoadInt64(&u.p90RequestsMs)
+	return u.metrics.GetTotalRequests(),
+		u.metrics.GetTotalOrders(),
+		u.metrics.GetP90Duration()
 }

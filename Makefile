@@ -45,3 +45,9 @@ imports: install_imports
 
 lint:
 	@$(LINT_BIN) run --fix=false ./...
+
+pprofcpu:
+	go tool pprof -http=:8080 /tmp/cpu.pprof
+
+pprofmem:
+	go tool pprof -http=:8081 /tmp/mem.pprof
