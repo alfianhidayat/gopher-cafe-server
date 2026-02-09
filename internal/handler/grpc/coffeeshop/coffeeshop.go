@@ -14,7 +14,7 @@ import (
 )
 
 type CoffeeshopUsecase interface {
-	ExecuteBrew(orders []entity.Order, baristas int) []entity.OrderResult
+	ExecuteBrew(ctx context.Context, orders []entity.Order, baristas int) []entity.OrderResult
 	GetStats() (int64, int64, int64)
 }
 
@@ -55,7 +55,7 @@ func (h *CoffeeshopGrpcHandler) ExecuteBrew(ctx context.Context, req *pb.Execute
 	}
 
 	// 3. Execution: Call the Usecase
-	results := h.uc.ExecuteBrew(internalOrders, int(req.Baristas))
+	results := h.uc.ExecuteBrew(ctx, internalOrders, int(req.Baristas))
 
 	// 4. Mapping: Domain Entities -> Protobuf Response (CRP-05)
 	protoResults := make([]*pb.Result, len(results))

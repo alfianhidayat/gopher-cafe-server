@@ -12,6 +12,23 @@ const (
 	EquipWhisk
 )
 
+func (e EquipmentType) String() string {
+	switch e {
+	case EquipGrinder:
+		return "Grinder"
+	case EquipEspressoMachine:
+		return "EspressoMachine"
+	case EquipMilkSteamer:
+		return "MilkSteamer"
+	case EquipBlender:
+		return "Blender"
+	case EquipWhisk:
+		return "Whisk"
+	default:
+		return "Unknown"
+	}
+}
+
 type DrinkType int
 
 const (
