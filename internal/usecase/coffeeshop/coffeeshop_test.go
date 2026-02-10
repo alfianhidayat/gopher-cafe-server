@@ -63,7 +63,7 @@ func Test(t *testing.T) {
 			}
 			manager.StartAll()
 
-			metrics := entity.NewOrderMetrics(10000)
+			metrics := entity.NewOrderMetrics()
 
 			usecase := NewCoffeeshopUsecase(manager, metrics)
 			results := usecase.ExecuteBrew(t.Context(), test.orders, test.baristas)

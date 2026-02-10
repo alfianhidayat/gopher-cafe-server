@@ -75,14 +75,14 @@ func main() {
 	}
 	equipPoolManager.StartAll()
 
-	metrics := coffeeshop.NewOrderMetrics(10000)
+	metrics := coffeeshop.NewOrderMetrics()
 
 	// Initialize the Layers
 	coffeeUsecase := usecase.NewCoffeeshopUsecase(equipPoolManager, metrics)
 	coffeeHandler := handler.NewCoffeeshopGrpcHandler(coffeeUsecase)
 
 	// Create the gRPC Server instance
-	grpcServer = grpc.NewServer(grpc.UnaryInterceptor(TimeoutMiddleware()))
+	grpcServer = grpc.NewServer()
 
 	// Register the Service (The "Route Definition")
 	// This tells the gRPC server to route incoming GopherCafe calls to our handler.
