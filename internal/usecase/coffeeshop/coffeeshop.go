@@ -27,11 +27,22 @@ func NewCoffeeshopUsecase(manager *worker.EquipPoolManager, metrics *entity.Orde
 func (u *CoffeeshopUsecase) ExecuteBrew(ctx context.Context, orders []entity.Order, baristas int) []entity.OrderResult {
 	u.metrics.RecordTotalRequests(len(orders))
 
-	orderInputChan := make(chan OrderInput)
-	defer close(orderInputChan)
+	orderInputChan := make(chan entity.Order, len(orders))
 
+	for _, order := range orders {
+		orderInputChan <- order
+		logger.Debugf("Order %d submitted", order.ID)
+	}
+	close(orderInputChan)
+
+	orderResultChan := make(chan entity.OrderResult, len(orders))
+
+	wg := sync.WaitGroup{}
+
+	wg.Add(baristas)
 	for i := range baristas {
 		go func() {
+			defer wg.Done()
 			logger.Debugf("Baristas: %d start working", i)
 			for {
 				select {
@@ -43,59 +54,29 @@ func (u *CoffeeshopUsecase) ExecuteBrew(ctx context.Context, orders []entity.Ord
 						logger.Debugf("Baristas: %d got channel closed", i)
 						return
 					}
-					logger.Debugf("Baristas: %d executing order: %d", i, input.data.ID)
-					res, err := u.processOrder(input.data)
+					logger.Debugf("Baristas: %d executing order: %d", i, input.ID)
+					res, err := u.processOrder(input)
 					if err != nil {
-						input.resultChannel <- entity.OrderResult{OrderID: input.data.ID}
-						logger.Errorf("Baristas: %d processing order %d failed: %s", i, input.data.ID, err)
-						return
+						logger.Errorf("Baristas: %d processing order %d failed: %s", i, input.ID, err)
+						continue
 					}
-					input.resultChannel <- res
+					orderResultChan <- res
+					u.recordOrderStats(res)
 				}
 			}
 		}()
 	}
 
-	wg := sync.WaitGroup{}
-
-	logger.Debugf("Start submit orders")
+	go func() {
+		wg.Wait()
+		close(orderResultChan)
+	}()
 
 	results := make([]entity.OrderResult, 0, len(orders))
 
-	for _, order := range orders {
-		orderResultChan := make(chan entity.OrderResult)
-
-		logger.Debugf("Order %d submitted", order.ID)
-
-		select {
-		case orderInputChan <- OrderInput{
-			data:          order,
-			resultChannel: orderResultChan,
-		}:
-		case <-ctx.Done():
-			return results
-		}
-
-		wg.Add(1)
-		go func() {
-			defer close(orderResultChan)
-			defer wg.Done()
-			select {
-			case <-ctx.Done():
-				logger.Debugf("OrderResult %d got context done", order.ID)
-				return
-			case orderResult, ok := <-orderResultChan:
-				if !ok {
-					logger.Debugf("OrderResult %d got channel closed", order.ID)
-					return
-				}
-				results = append(results, orderResult)
-				u.recordOrderStats(orderResult)
-			}
-		}()
+	for result := range orderResultChan {
+		results = append(results, result)
 	}
-
-	wg.Wait()
 
 	logger.Debugf("Finish execute brew : %d, %d", len(orders), baristas)
 	return results
