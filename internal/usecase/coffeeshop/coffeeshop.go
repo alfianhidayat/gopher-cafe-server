@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"gopher-cafe/internal/worker"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	entity "gopher-cafe/internal/entity/coffeeshop"
@@ -25,22 +26,31 @@ func NewCoffeeshopUsecase(manager *worker.EquipPoolManager, metrics *entity.Orde
 }
 
 func (u *CoffeeshopUsecase) ExecuteBrew(ctx context.Context, orders []entity.Order, baristas int) []entity.OrderResult {
-	u.metrics.RecordTotalRequests(len(orders))
+	orderInputChan := make(chan entity.OrderStep, len(orders))
 
-	orderInputChan := make(chan entity.Order, len(orders))
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 
 	for _, order := range orders {
-		orderInputChan <- order
+		recipe := entity.Recipes[order.Drink]
+
+		orderInputChan <- entity.OrderStep{
+			Order:    order,
+			Recipes:  recipe,
+			Steps:    make([]entity.StepExecution, 0, len(recipe)),
+			NextStep: uint8(0),
+		}
+
 		logger.Debugf("Order %d submitted", order.ID)
 	}
-	close(orderInputChan)
 
 	orderResultChan := make(chan entity.OrderResult, len(orders))
 
 	wg := sync.WaitGroup{}
+	completed := atomic.Int64{}
 
 	wg.Add(baristas)
-	for i := range baristas {
+	for i := 0; i < baristas; i++ {
 		go func() {
 			defer wg.Done()
 			logger.Debugf("Baristas: %d start working", i)
@@ -54,14 +64,41 @@ func (u *CoffeeshopUsecase) ExecuteBrew(ctx context.Context, orders []entity.Ord
 						logger.Debugf("Baristas: %d got channel closed", i)
 						return
 					}
-					logger.Debugf("Baristas: %d executing order: %d", i, input.ID)
-					res, err := u.processOrder(input)
-					if err != nil {
-						logger.Errorf("Baristas: %d processing order %d failed: %s", i, input.ID, err)
+
+					if len(input.Recipes) != len(input.Steps) {
+						logger.Debugf("Baristas: %d executing order: %d, step: %d", i, input.Order.ID, input.NextStep)
+						err := u.processStep(&input)
+						if err != nil {
+							logger.Errorf("Baristas: %d processing order %d failed: %s", i, input.Order.ID, err)
+							continue
+						}
+						// requeue safely
+						select {
+						case orderInputChan <- input:
+						case <-ctx.Done():
+							return
+						}
 						continue
 					}
-					orderResultChan <- res
-					u.recordOrderStats(res)
+
+					res := entity.OrderResult{
+						OrderID: input.Order.ID,
+						Steps:   input.Steps,
+					}
+
+					select {
+					case orderResultChan <- res:
+						u.recordOrderStats(res)
+					case <-ctx.Done():
+						return
+					}
+
+					// count completion
+					if completed.Add(1) == int64(len(orders)) {
+						// 🔴 shutdown trigger point
+						cancel()              // stop workers
+						close(orderInputChan) // unblock receivers
+					}
 				}
 			}
 		}()
@@ -78,43 +115,44 @@ func (u *CoffeeshopUsecase) ExecuteBrew(ctx context.Context, orders []entity.Ord
 		results = append(results, result)
 	}
 
+	if len(results) == len(orders) {
+		u.metrics.RecordTotalRequests(1)
+	}
+
 	logger.Debugf("Finish execute brew : %d, %d", len(orders), baristas)
 	return results
 }
 
-func (u *CoffeeshopUsecase) processOrder(order entity.Order) (entity.OrderResult, error) {
-	var emptyResult entity.OrderResult
+func (u *CoffeeshopUsecase) processStep(input *entity.OrderStep) error {
+	startStep := time.Now().UnixMilli()
 
-	recipe := entity.Recipes[order.Drink]
-	res := entity.OrderResult{OrderID: order.ID}
+	step := input.Recipes[input.NextStep]
 
-	for _, step := range recipe {
-		startStep := time.Now().UnixMilli()
-
-		pool, err := u.equipPoolManager.GetWorkerPool(step.Equipment)
-		if err != nil {
-			return emptyResult, fmt.Errorf("get worker pool failed: %v", err)
-		}
-
-		_, err = pool.Submit(worker.Job{
-			OrderID: order.ID,
-			Timer:   step.Duration,
-		})
-
-		if err != nil {
-			return emptyResult, fmt.Errorf("submit failed: %v", err)
-		}
-
-		endStep := time.Now().UnixMilli()
-
-		res.Steps = append(res.Steps, entity.StepExecution{
-			Equipment:   step.Equipment,
-			StartTimeMs: startStep,
-			EndTimeMs:   endStep,
-		})
+	pool, err := u.equipPoolManager.GetWorkerPool(step.Equipment)
+	if err != nil {
+		return fmt.Errorf("get worker pool failed: %v", err)
 	}
 
-	return res, nil
+	err = pool.Submit(worker.Job{
+		OrderID: input.Order.ID,
+		Timer:   step.Duration,
+	})
+
+	if err != nil {
+		return fmt.Errorf("submit failed: %v", err)
+	}
+
+	endStep := time.Now().UnixMilli()
+
+	input.Steps = append(input.Steps, entity.StepExecution{
+		Equipment:   step.Equipment,
+		StartTimeMs: startStep,
+		EndTimeMs:   endStep,
+	})
+
+	input.NextStep++
+
+	return nil
 }
 
 func (u *CoffeeshopUsecase) recordOrderStats(res entity.OrderResult) {
@@ -122,7 +160,5 @@ func (u *CoffeeshopUsecase) recordOrderStats(res entity.OrderResult) {
 }
 
 func (u *CoffeeshopUsecase) GetStats() (int64, int64, int64) {
-	return u.metrics.GetTotalRequests(),
-		u.metrics.GetTotalOrders(),
-		u.metrics.GetP90Duration()
+	return u.metrics.GetStats()
 }

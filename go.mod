@@ -5,6 +5,7 @@ go 1.24.0
 tool go.uber.org/mock/mockgen
 
 require (
+	github.com/rcrowley/go-metrics v0.0.0-20250401214520-65e299d6c5c9
 	github.com/rexyajaib/gopher-cafe v0.0.0-20260202093046-54786944881d
 	github.com/stretchr/testify v1.10.0
 	go.uber.org/mock v0.6.0

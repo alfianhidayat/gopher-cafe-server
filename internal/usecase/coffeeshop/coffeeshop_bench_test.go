@@ -23,7 +23,7 @@ func BenchmarkExecuteBrew(b *testing.B) {
 	}
 	manager.StartAll()
 
-	metrics := entity.NewOrderMetrics(10000)
+	metrics := entity.NewOrderMetrics()
 
 	usecase := NewCoffeeshopUsecase(manager, metrics)
 

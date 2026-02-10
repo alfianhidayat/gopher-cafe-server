@@ -70,7 +70,7 @@ func (wp *WorkerPool) worker(id uint8) {
 	}
 }
 
-func (wp *WorkerPool) Submit(job Job) (JobOutput, error) {
+func (wp *WorkerPool) Submit(job Job) error {
 	ji := JobInput{
 		Job:    job,
 		Output: make(chan JobOutput),
@@ -79,14 +79,14 @@ func (wp *WorkerPool) Submit(job Job) (JobOutput, error) {
 	select {
 	case wp.jobs <- ji:
 	case <-wp.ctx.Done():
-		return JobOutput{}, errors.New("pool closed")
+		return errors.New("pool closed")
 	}
 
 	// wait for response
 	select {
 	case res := <-ji.Output:
-		return res, nil
+		return res.Err
 	case <-wp.ctx.Done():
-		return JobOutput{}, errors.New("shutdown")
+		return errors.New("shutdown")
 	}
 }

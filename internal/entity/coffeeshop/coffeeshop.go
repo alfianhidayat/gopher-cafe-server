@@ -80,3 +80,10 @@ type OrderResult struct {
 	OrderID int64
 	Steps   []StepExecution
 }
+
+type OrderStep struct {
+	Order    Order
+	Recipes  []RecipeStep
+	Steps    []StepExecution
+	NextStep uint8
+}

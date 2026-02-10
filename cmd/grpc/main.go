@@ -75,7 +75,7 @@ func main() {
 	}
 	equipPoolManager.StartAll()
 
-	metrics := coffeeshop.NewOrderMetrics(10000)
+	metrics := coffeeshop.NewOrderMetrics()
 
 	// Initialize the Layers
 	coffeeUsecase := usecase.NewCoffeeshopUsecase(equipPoolManager, metrics)
