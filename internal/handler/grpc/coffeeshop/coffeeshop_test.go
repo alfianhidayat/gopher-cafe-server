@@ -42,7 +42,7 @@ func TestExecuteBrew(t *testing.T) {
 			mockExpect: func() {
 				// We expect the usecase to be called exactly once
 				mockUC.EXPECT().
-					ExecuteBrew(gomock.Len(1), 1).
+					ExecuteBrew(t.Context(), gomock.Len(1), 1).
 					Return([]entity.OrderResult{
 						{
 							OrderID: 101,

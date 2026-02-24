@@ -23,7 +23,7 @@ func NewWorkerPool(name string, workers uint8) *WorkerPool {
 
 	wp := &WorkerPool{
 		name:       name,
-		jobs:       make(chan JobInput, 10000),
+		jobs:       make(chan JobInput),
 		ctx:        ctx,
 		cancel:     cancel,
 		numWorkers: workers,
@@ -65,7 +65,7 @@ func (wp *WorkerPool) worker(id uint8) {
 				job.Job,
 				nil,
 			}
-			logger.Debugf("[%s] worker %d doing job OrderID: %v finish", wp.name, id, job.Job)
+			logger.Debugf("[%s] worker %d doing job: %v finish", wp.name, id, job.Job)
 		}
 	}
 }

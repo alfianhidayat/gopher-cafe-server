@@ -55,19 +55,17 @@ func Test(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			ew := worker.EquipmentWorkers
 
-			equipPoolManager := worker.NewEquipPoolManager(8)
-			equipPoolManager = worker.NewEquipPoolManager(7)
-			equipPoolManager.Register(entity.EquipEspressoMachine, 2)
-			equipPoolManager.Register(entity.EquipGrinder, 1)
-			equipPoolManager.Register(entity.EquipMilkSteamer, 1)
-			equipPoolManager.Register(entity.EquipBlender, 1)
-			equipPoolManager.Register(entity.EquipWhisk, 2)
-			equipPoolManager.StartAll()
+			manager := worker.NewEquipPoolManager(uint8(len(ew)))
+			for k, v := range ew {
+				manager.Register(k, v)
+			}
+			manager.StartAll()
 
-			metrics := entity.NewOrderMetrics(10000)
+			metrics := entity.NewOrderMetrics()
 
-			usecase := NewCoffeeshopUsecase(equipPoolManager, metrics)
+			usecase := NewCoffeeshopUsecase(manager, metrics)
 			results := usecase.ExecuteBrew(t.Context(), test.orders, test.baristas)
 
 			assert.Len(t, results, len(test.want))

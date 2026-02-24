@@ -25,74 +25,67 @@ func NewCoffeeshopUsecase(manager *worker.EquipPoolManager, metrics *entity.Orde
 }
 
 func (u *CoffeeshopUsecase) ExecuteBrew(ctx context.Context, orders []entity.Order, baristas int) []entity.OrderResult {
-	u.metrics.RecordTotalRequests(len(orders))
+	orderInputChan := make(chan entity.Order, len(orders))
 
-	orderInputChan := make(chan OrderInput, len(orders))
-	//defer close(orderInputChan)
+	for _, order := range orders {
+		orderInputChan <- order
+		logger.Debugf("Order %d submitted", order.ID)
+	}
+	close(orderInputChan)
 
+	orderResultChan := make(chan entity.OrderResult, len(orders))
+
+	wg := sync.WaitGroup{}
+
+	wg.Add(baristas)
 	for i := range baristas {
-		go func(oic <-chan OrderInput) {
+		go func() {
+			defer wg.Done()
 			logger.Debugf("Baristas: %d start working", i)
 			for {
 				select {
 				case <-ctx.Done():
-					logger.Debugf("Baristas: %d got context done", i)
+					logger.Debugf("Baristas: %d got context done, %v", i, ctx.Err())
 					return
-				case input, ok := <-oic:
+				case input, ok := <-orderInputChan:
 					if !ok {
 						logger.Debugf("Baristas: %d got channel closed", i)
 						return
 					}
-					logger.Debugf("Baristas: %d executing order: %d", i, input.data.ID)
-					err := u.processOrder(input)
+					logger.Debugf("Baristas: %d executing order: %d", i, input.ID)
+					res, err := u.processOrder(input)
 					if err != nil {
-						logger.Errorf("Baristas: %d processing order %d failed: %s", i, input.data.ID, err)
-						return
+						logger.Errorf("Baristas: %d processing order %d failed: %s", i, input.ID, err)
+						continue
 					}
+					orderResultChan <- res
+					u.recordOrderStats(res)
 				}
 			}
-		}(orderInputChan)
+		}()
 	}
 
-	wg := sync.WaitGroup{}
-
-	logger.Debugf("Start submit orders")
+	go func() {
+		wg.Wait()
+		close(orderResultChan)
+	}()
 
 	results := make([]entity.OrderResult, 0, len(orders))
 
-	for _, order := range orders {
-		orderResultChan := make(chan entity.OrderResult)
-
-		logger.Debugf("Order %d submitted", order.ID)
-		orderInputChan <- OrderInput{
-			data:          order,
-			resultChannel: orderResultChan,
-		}
-
-		wg.Add(1)
-		go func(orc <-chan entity.OrderResult) {
-			defer wg.Done()
-			select {
-			case <-ctx.Done():
-				logger.Debugf("OrderResult %d got context done", order.ID)
-				return
-			case orderResult, ok := <-orc:
-				if !ok {
-					logger.Debugf("OrderResult %d got channel closed", order.ID)
-					return
-				}
-				results = append(results, orderResult)
-				u.recordOrderStats(orderResult)
-			}
-		}(orderResultChan)
+	for result := range orderResultChan {
+		results = append(results, result)
 	}
 
-	wg.Wait()
+	if len(results) == len(orders) {
+		u.metrics.RecordTotalRequests(1)
+	}
+
+	logger.Debugf("Finish execute brew : %d, %d", len(orders), baristas)
 	return results
 }
 
-func (u *CoffeeshopUsecase) processOrder(input OrderInput) error {
-	order := input.data
+func (u *CoffeeshopUsecase) processOrder(order entity.Order) (entity.OrderResult, error) {
+	var emptyResult entity.OrderResult
 
 	recipe := entity.Recipes[order.Drink]
 	res := entity.OrderResult{OrderID: order.ID}
@@ -102,7 +95,7 @@ func (u *CoffeeshopUsecase) processOrder(input OrderInput) error {
 
 		pool, err := u.equipPoolManager.GetWorkerPool(step.Equipment)
 		if err != nil {
-			return fmt.Errorf("get worker pool failed: %v", err)
+			return emptyResult, fmt.Errorf("get worker pool failed: %v", err)
 		}
 
 		_, err = pool.Submit(worker.Job{
@@ -111,7 +104,7 @@ func (u *CoffeeshopUsecase) processOrder(input OrderInput) error {
 		})
 
 		if err != nil {
-			return fmt.Errorf("submit failed: %v", err)
+			return emptyResult, fmt.Errorf("submit failed: %v", err)
 		}
 
 		endStep := time.Now().UnixMilli()
@@ -123,8 +116,7 @@ func (u *CoffeeshopUsecase) processOrder(input OrderInput) error {
 		})
 	}
 
-	input.resultChannel <- res
-	return nil
+	return res, nil
 }
 
 func (u *CoffeeshopUsecase) recordOrderStats(res entity.OrderResult) {
@@ -132,7 +124,5 @@ func (u *CoffeeshopUsecase) recordOrderStats(res entity.OrderResult) {
 }
 
 func (u *CoffeeshopUsecase) GetStats() (int64, int64, int64) {
-	return u.metrics.GetTotalRequests(),
-		u.metrics.GetTotalOrders(),
-		u.metrics.GetP90Duration()
+	return u.metrics.GetStats()
 }
